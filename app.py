@@ -1062,4 +1062,152 @@ DEBUG_TEMPLATE = '''
 def get_movies_from_atmovies():
     """從開眼電影網爬取本週上映電影"""
     url = "http://www.atmovies.com.tw/movie/next/"
-    Data =
+    Data = requests.get(url, verify=False, timeout=10)
+    Data.encoding = "utf-8"
+    sp = BeautifulSoup(Data.text, "html.parser")
+    result = sp.select(".filmListAllX li")
+    
+    movies = []
+    
+    for item in result:
+        title_tag = item.find("div", class_="filmtitle")
+        if not title_tag:
+            continue
+        title = title_tag.text.strip()
+        
+        a_tag = title_tag.find("a")
+        hyperlink = "http://www.atmovies.com.tw" + a_tag.get("href") if a_tag else ""
+        
+        runtime_tag = item.find("div", class_="runtime")
+        release_date = "未知"
+        if runtime_tag:
+            runtime_text = runtime_tag.text
+            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', runtime_text)
+            if date_match:
+                release_date = date_match.group(1)
+        
+        img_tag = item.find("img")
+        poster = img_tag.get("src") if img_tag else ""
+        
+        rating = "未標示"
+        rating_code = "unknown"
+        
+        if hyperlink:
+            try:
+                detail_response = requests.get(hyperlink, verify=False, timeout=5)
+                detail_response.encoding = "utf-8"
+                detail_sp = BeautifulSoup(detail_response.text, "html.parser")
+                page_text = detail_sp.get_text()
+                
+                if re.search(r'保護級[（(]P[）)]|保護級\s*[（(]P[）)]', page_text):
+                    rating = '保護級(P)'
+                    rating_code = 'P'
+                elif re.search(r'普遍級[（(]G[）)]|普遍級\s*[（(]G[）)]', page_text):
+                    rating = '普遍級(G)'
+                    rating_code = 'G'
+                elif re.search(r'輔導.*?12|輔12級|PG12', page_text):
+                    rating = '輔導12級(PG12)'
+                    rating_code = 'PG12'
+                elif re.search(r'輔導.*?15|輔15級|PG15', page_text):
+                    rating = '輔導15級(PG15)'
+                    rating_code = 'PG15'
+                elif re.search(r'限制級[（(]R[）)]|限制級\s*[（(]R[）)]', page_text):
+                    rating = '限制級(R)'
+                    rating_code = 'R'
+            except:
+                pass
+        
+        movies.append({
+            'title': title,
+            'url': hyperlink,
+            'release_date': release_date,
+            'rating': rating,
+            'rating_code': rating_code,
+            'poster': poster
+        })
+    
+    return movies
+
+@app.route("/")
+def index():
+    return render_template_string(INDEX_TEMPLATE)
+
+@app.route("/debug")
+def debug():
+    try:
+        all_movies = get_movies_from_atmovies()
+        stats = {}
+        for movie in all_movies:
+            rating = movie['rating']
+            stats[rating] = stats.get(rating, 0) + 1
+        return render_template_string(DEBUG_TEMPLATE, movies=all_movies, stats=stats)
+    except Exception as e:
+        return f"除錯頁面發生錯誤: {str(e)}"
+
+@app.route("/recommend")
+def recommend():
+    rating = request.args.get("rating", "P")
+    
+    rating_map_display = {
+        'P': {'name': '保護級(P)', 'color': '#4CAF50', 'description': '🎯 適合6歲以上觀眾觀賞，P級電影內容溫和，含有少量教育或娛樂元素。'},
+        'G': {'name': '普遍級(G)', 'color': '#2196F3', 'description': '👶 適合所有年齡層觀賞，內容普遍溫和。'},
+        'PG12': {'name': '輔導12級(PG12)', 'color': '#FF9800', 'description': '🧒 未滿12歲不宜觀賞，12歲以上須家長陪同。'},
+        'PG15': {'name': '輔導15級(PG15)', 'color': '#FF5722', 'description': '👦 未滿15歲不宜觀賞，15歲以上須家長陪同。'},
+        'R': {'name': '限制級(R)', 'color': '#F44336', 'description': '🔞 未滿18歲不得觀賞，內容可能包含成人議題。'},
+        'all': {'name': '全部電影', 'color': '#9C27B0', 'description': '📽️ 顯示本週所有上映電影及其分級資訊。'}
+    }
+    
+    rating_info = rating_map_display.get(rating, rating_map_display['P'])
+    
+    try:
+        all_movies = get_movies_from_atmovies()
+        
+        if rating == 'all':
+            filtered_movies = all_movies
+        else:
+            filtered_movies = []
+            for movie in all_movies:
+                movie_rating = movie['rating']
+                if rating == 'P' and ('保護級' in movie_rating or 'P' in movie_rating):
+                    filtered_movies.append(movie)
+                elif rating == 'G' and ('普遍級' in movie_rating or 'G' in movie_rating):
+                    filtered_movies.append(movie)
+                elif rating == 'PG12' and ('輔12' in movie_rating or 'PG12' in movie_rating):
+                    filtered_movies.append(movie)
+                elif rating == 'PG15' and ('輔15' in movie_rating or 'PG15' in movie_rating):
+                    filtered_movies.append(movie)
+                elif rating == 'R' and ('限制級' in movie_rating or 'R' in movie_rating):
+                    filtered_movies.append(movie)
+        
+        debug_stats = {}
+        for movie in all_movies:
+            r = movie['rating']
+            debug_stats[r] = debug_stats.get(r, 0) + 1
+        
+        return render_template_string(
+            RECOMMEND_TEMPLATE,
+            movies=filtered_movies,
+            total_count=len(all_movies),
+            rating_name=rating_info['name'],
+            rating_color=rating_info['color'],
+            description=rating_info['description'],
+            update_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            debug_data=debug_stats if rating != 'all' else None
+        )
+    
+    except Exception as e:
+        return render_template_string(
+            RECOMMEND_TEMPLATE,
+            movies=[],
+            total_count=0,
+            rating_name=rating_info['name'],
+            rating_color=rating_info['color'],
+            description=f"查詢發生錯誤：{str(e)}",
+            update_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            debug_data=None
+        )
+
+app = app
+
+if __name__ == "__main__":
+    app.run(debug=True, host='0.0.0.0', port=5000)
