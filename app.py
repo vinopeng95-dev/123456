@@ -4,12 +4,13 @@ from bs4 import BeautifulSoup
 import urllib3
 from datetime import datetime
 import re
+import json
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 
-# HTML 模板 - 首頁
+# HTML 模板 - 首頁（同上，略）
 INDEX_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -226,6 +227,17 @@ INDEX_TEMPLATE = '''
             color: white;
         }
 
+        .debug-info {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 20px;
+            font-size: 12px;
+            color: #856404;
+            text-align: left;
+        }
+
         @media (max-width: 768px) {
             body {
                 padding: 20px;
@@ -254,14 +266,15 @@ INDEX_TEMPLATE = '''
                     <option value="PG12">🧒 PG12 (輔導12級)</option>
                     <option value="PG15">👦 PG15 (輔導15級)</option>
                     <option value="R">🔞 R級 (限制級)</option>
+                    <option value="all">📽️ 顯示全部電影</option>
                 </select>
                 <button type="submit" class="search-btn">🔍 查詢推薦</button>
             </form>
             
             <div class="quick-buttons">
                 <button class="quick-btn" onclick="location.href='/recommend?rating=P'">🎯 P級電影</button>
-                <button class="quick-btn" onclick="location.href='/recommend?rating=G'">👶 G級電影</button>
-                <button class="quick-btn" onclick="location.href='/recommend'">📅 本週全電影</button>
+                <button class="quick-btn" onclick="location.href='/recommend?rating=all'">📅 本週全電影</button>
+                <button class="quick-btn" onclick="location.href='/debug'">🔧 查看除錯</button>
                 <button class="quick-btn" onclick="location.href='/'">🔄 重新整理</button>
             </div>
         </div>
@@ -478,6 +491,15 @@ RECOMMEND_TEMPLATE = '''
             cursor: pointer;
         }
 
+        .debug-info {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 10px;
+            margin-top: 20px;
+            font-size: 12px;
+            color: #0c5460;
+        }
+
         @media (max-width: 768px) {
             body {
                 padding: 20px;
@@ -505,6 +527,7 @@ RECOMMEND_TEMPLATE = '''
                     <span class="rating-badge">{{ rating_name }}</span>
                 </h2>
                 <p>共找到 <span class="results-count">{{ movies|length }}</span> 部符合條件的電影</p>
+                <p style="font-size: 14px; color: #666;">總共爬取 {{ total_count }} 部本週上映電影</p>
             </div>
 
             {% if movies %}
@@ -530,7 +553,15 @@ RECOMMEND_TEMPLATE = '''
             {% else %}
             <div class="no-results">
                 <p>😢 抱歉，本週沒有找到「{{ rating_name }}」電影</p>
-                <p>試試其他分級，或稍後再來查詢</p>
+                <p>💡 可能原因：</p>
+                <ul style="text-align: left; display: inline-block; margin-top: 10px;">
+                    <li>本週確實沒有該分級的電影上映</li>
+                    <li>網站分級資訊標示不明確</li>
+                    <li>建議點擊「顯示全部電影」查看所有電影的分級</li>
+                </ul>
+                <p style="margin-top: 20px;">
+                    <a href="/recommend?rating=all" style="color: #667eea;">👉 點我查看全部電影 👈</a>
+                </p>
             </div>
             {% endif %}
 
@@ -542,10 +573,21 @@ RECOMMEND_TEMPLATE = '''
                         <option value="PG12">PG12 (輔導12級)</option>
                         <option value="PG15">PG15 (輔導15級)</option>
                         <option value="R">R級 (限制級)</option>
+                        <option value="all">顯示全部電影</option>
                     </select>
                     <button type="submit">🔍 查詢其他分級</button>
                 </form>
             </div>
+
+            {% if debug_data %}
+            <div class="debug-info">
+                <strong>🔧 除錯資訊：</strong><br>
+                所有電影分級統計：<br>
+                {% for rating, count in debug_data.items() %}
+                - {{ rating }}: {{ count }} 部<br>
+                {% endfor %}
+            </div>
+            {% endif %}
         </div>
 
         <div class="footer">
@@ -556,17 +598,92 @@ RECOMMEND_TEMPLATE = '''
 </html>
 '''
 
+# 除錯頁面
+DEBUG_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>除錯資訊 - 電影分級查詢</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+        }
+        h1 { color: #333; }
+        .movie-item {
+            border-bottom: 1px solid #ddd;
+            padding: 10px;
+            margin: 5px 0;
+        }
+        .rating-P { background: #e8f5e9; }
+        .rating-G { background: #e3f2fd; }
+        .rating-PG12 { background: #fff3e0; }
+        .rating-PG15 { background: #fbe9e7; }
+        .rating-R { background: #ffebee; }
+        .back-btn {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 10px 20px;
+            text-decoration: none;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-btn">← 返回首頁</a>
+        <h1>🔧 電影分級除錯資訊</h1>
+        <p>總共爬取 {{ movies|length }} 部電影</p>
+        
+        <h2>📊 分級統計</h2>
+        <ul>
+        {% for rating, count in stats.items() %}
+            <li><strong>{{ rating }}</strong>: {{ count }} 部</li>
+        {% endfor %}
+        </ul>
+        
+        <h2>📽️ 所有電影詳細資訊</h2>
+        {% for movie in movies %}
+        <div class="movie-item rating-{{ movie.rating_code }}">
+            <strong>{{ movie.title }}</strong><br>
+            分級: {{ movie.rating }}<br>
+            上映日期: {{ movie.release_date }}<br>
+            連結: <a href="{{ movie.url }}" target="_blank">{{ movie.url[:50] }}...</a><br>
+            海報: <img src="{{ movie.poster }}" style="max-width: 100px; margin-top: 5px;" onerror="this.style.display='none'">
+        </div>
+        {% endfor %}
+    </div>
+</body>
+</html>
+'''
+
 def get_movies_from_atmovies():
-    """從開眼電影網爬取本週上映電影"""
+    """從開眼電影網爬取本週上映電影（改良版）"""
     url = "http://www.atmovies.com.tw/movie/next/"
+    print(f"正在爬取: {url}")
+    
     Data = requests.get(url, verify=False, timeout=10)
     Data.encoding = "utf-8"
     sp = BeautifulSoup(Data.text, "html.parser")
     result = sp.select(".filmListAllX li")
     
+    print(f"找到 {len(result)} 部電影")
+    
     movies = []
     
-    for item in result:
+    for idx, item in enumerate(result):
         # 電影名稱
         title_tag = item.find("div", class_="filmtitle")
         if not title_tag:
@@ -586,45 +703,88 @@ def get_movies_from_atmovies():
             if date_match:
                 release_date = date_match.group(1)
         
-        # 獲取電影分級資訊
+        # 海報圖片
+        img_tag = item.find("img")
+        poster = img_tag.get("src") if img_tag else ""
+        
+        # 獲取電影分級資訊（從詳細頁面）
         rating = "未標示"
+        rating_code = "unknown"
+        
         if hyperlink:
             try:
+                print(f"正在查詢分級: {title}")
                 detail_response = requests.get(hyperlink, verify=False, timeout=5)
                 detail_response.encoding = "utf-8"
                 detail_sp = BeautifulSoup(detail_response.text, "html.parser")
                 
+                # 搜尋整個頁面文字
                 page_text = detail_sp.get_text()
-                if '保護級' in page_text:
+                
+                # 更精確的分級判斷
+                if re.search(r'保護級[（(]P[）)]|保護級\s*[（(]P[）)]|分級[：:]\s*保護級', page_text):
                     rating = '保護級(P)'
-                elif '普遍級' in page_text:
+                    rating_code = 'P'
+                elif re.search(r'普遍級[（(]G[）)]|普遍級\s*[（(]G[）)]|分級[：:]\s*普遍級', page_text):
                     rating = '普遍級(G)'
-                elif '輔12' in page_text:
-                    rating = '輔12級(PG12)'
-                elif '輔15' in page_text:
-                    rating = '輔15級(PG15)'
-                elif '限制級' in page_text:
+                    rating_code = 'G'
+                elif re.search(r'輔導.*?12|輔12級|PG12', page_text):
+                    rating = '輔導12級(PG12)'
+                    rating_code = 'PG12'
+                elif re.search(r'輔導.*?15|輔15級|PG15', page_text):
+                    rating = '輔導15級(PG15)'
+                    rating_code = 'PG15'
+                elif re.search(r'限制級[（(]R[）)]|限制級\s*[（(]R[）)]|分級[：:]\s*限制級', page_text):
                     rating = '限制級(R)'
-            except:
-                pass
-        
-        # 海報圖片
-        img_tag = item.find("img")
-        poster = img_tag.get("src") if img_tag else ""
+                    rating_code = 'R'
+                else:
+                    # 如果沒找到，檢查是否在 meta 標籤中
+                    meta_rating = detail_sp.find('meta', {'property': 'rating'})
+                    if meta_rating:
+                        meta_content = meta_rating.get('content', '')
+                        if '保護' in meta_content:
+                            rating = '保護級(P)'
+                            rating_code = 'P'
+                        elif '普遍' in meta_content:
+                            rating = '普遍級(G)'
+                            rating_code = 'G'
+                            
+            except Exception as e:
+                print(f"查詢 {title} 分級時發生錯誤: {e}")
         
         movies.append({
             'title': title,
             'url': hyperlink,
             'release_date': release_date,
             'rating': rating,
+            'rating_code': rating_code,
             'poster': poster
         })
+        
+        print(f"電影 {idx}: {title} - {rating}")
     
     return movies
 
 @app.route("/")
 def index():
     return render_template_string(INDEX_TEMPLATE)
+
+@app.route("/debug")
+def debug():
+    """除錯頁面 - 顯示所有爬取的電影和分級"""
+    try:
+        all_movies = get_movies_from_atmovies()
+        
+        # 統計各分級數量
+        stats = {}
+        for movie in all_movies:
+            rating = movie['rating']
+            stats[rating] = stats.get(rating, 0) + 1
+        
+        return render_template_string(DEBUG_TEMPLATE, movies=all_movies, stats=stats)
+    
+    except Exception as e:
+        return f"除錯頁面發生錯誤: {str(e)}"
 
 @app.route("/recommend")
 def recommend():
@@ -637,7 +797,8 @@ def recommend():
         'G': {'name': '普遍級(G)', 'color': '#2196F3', 'description': '適合所有年齡層觀賞，內容普遍溫和。'},
         'PG12': {'name': '輔導12級(PG12)', 'color': '#FF9800', 'description': '未滿12歲不宜觀賞，12歲以上須家長陪同。'},
         'PG15': {'name': '輔導15級(PG15)', 'color': '#FF5722', 'description': '未滿15歲不宜觀賞，15歲以上須家長陪同。'},
-        'R': {'name': '限制級(R)', 'color': '#F44336', 'description': '未滿18歲不得觀賞，內容可能包含成人議題。'}
+        'R': {'name': '限制級(R)', 'color': '#F44336', 'description': '未滿18歲不得觀賞，內容可能包含成人議題。'},
+        'all': {'name': '全部', 'color': '#9C27B0', 'description': '顯示本週所有上映電影及其分級資訊。'}
     }
     
     rating_info = rating_map_display.get(rating, rating_map_display['P'])
@@ -646,38 +807,51 @@ def recommend():
     try:
         all_movies = get_movies_from_atmovies()
         
-        # 根據分級篩選
-        filtered_movies = []
+        if rating == 'all':
+            filtered_movies = all_movies
+        else:
+            # 根據分級篩選
+            filtered_movies = []
+            for movie in all_movies:
+                movie_rating = movie['rating']
+                if rating == 'P' and ('保護級' in movie_rating or 'P' in movie_rating):
+                    filtered_movies.append(movie)
+                elif rating == 'G' and ('普遍級' in movie_rating or 'G' in movie_rating):
+                    filtered_movies.append(movie)
+                elif rating == 'PG12' and ('輔12' in movie_rating or 'PG12' in movie_rating):
+                    filtered_movies.append(movie)
+                elif rating == 'PG15' and ('輔15' in movie_rating or 'PG15' in movie_rating):
+                    filtered_movies.append(movie)
+                elif rating == 'R' and ('限制級' in movie_rating or 'R' in movie_rating):
+                    filtered_movies.append(movie)
+        
+        # 準備除錯統計資料
+        debug_stats = {}
         for movie in all_movies:
-            movie_rating = movie['rating']
-            if rating == 'P' and ('保護級' in movie_rating or 'P' in movie_rating):
-                filtered_movies.append(movie)
-            elif rating == 'G' and ('普遍級' in movie_rating or 'G' in movie_rating):
-                filtered_movies.append(movie)
-            elif rating == 'PG12' and ('輔12' in movie_rating or 'PG12' in movie_rating):
-                filtered_movies.append(movie)
-            elif rating == 'PG15' and ('輔15' in movie_rating or 'PG15' in movie_rating):
-                filtered_movies.append(movie)
-            elif rating == 'R' and ('限制級' in movie_rating or 'R' in movie_rating):
-                filtered_movies.append(movie)
+            r = movie['rating']
+            debug_stats[r] = debug_stats.get(r, 0) + 1
         
         return render_template_string(
             RECOMMEND_TEMPLATE,
             movies=filtered_movies,
+            total_count=len(all_movies),
             rating_name=rating_info['name'],
             rating_color=rating_info['color'],
             description=rating_info['description'],
-            update_time=datetime.now().strftime('%Y-%m-%d %H:%M')
+            update_time=datetime.now().strftime('%Y-%m-%d %H:%M'),
+            debug_data=debug_stats if rating != 'all' else None
         )
     
     except Exception as e:
         return render_template_string(
             RECOMMEND_TEMPLATE,
             movies=[],
+            total_count=0,
             rating_name=rating_info['name'],
             rating_color=rating_info['color'],
             description=f"查詢發生錯誤：{str(e)}",
-            update_time=datetime.now().strftime('%Y-%m-%d %H:%M')
+            update_time=datetime.now().strftime('%Y-%m-%d %H:%M'),
+            debug_data=None
         )
 
 # Vercel 需要這個
